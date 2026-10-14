@@ -114,10 +114,23 @@ as $$
   );
 $$;
 
+-- The trigger covers accounts created from now on. This covers any that
+-- already exist — including yours, if you added yourself before running
+-- this file.
+insert into public.profiles (id)
+select id from auth.users
+on conflict (id) do nothing;
+
 -- Read your own row, so the app can show you your role. No insert, update or
 -- delete policy: with RLS on, a missing policy denies, so roles change only
 -- from the Supabase dashboard, where the service role bypasses RLS.
 alter table public.profiles enable row level security;
+
+-- Defense in depth. The policies above already deny these, but Supabase
+-- grants them to authenticated on every new public table by default, so
+-- without this the table is one accidental `disable row level security`
+-- away from letting anyone sign themselves up as an admin.
+revoke insert, update, delete on public.profiles from anon, authenticated;
 
 drop policy if exists profiles_select on public.profiles;
 create policy profiles_select on public.profiles

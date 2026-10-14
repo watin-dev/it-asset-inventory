@@ -65,6 +65,10 @@ $$;
 -- "admins are appointed out of band" a rule rather than a convention.
 alter table public.profiles enable row level security;
 
+-- Defense in depth. The policies already deny these, but Supabase grants
+-- them to authenticated on every new public table by default.
+revoke insert, update, delete on public.profiles from anon, authenticated;
+
 drop policy if exists profiles_select on public.profiles;
 create policy profiles_select on public.profiles
   for select using (id = auth.uid() or public.is_admin());

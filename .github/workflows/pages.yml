@@ -24,9 +24,16 @@ jobs:
       - uses: actions/checkout@v4
       - name: Run smoke tests
         run: node test/smoke.mjs
+      - name: Collect the site files
+        # Only the four files the browser asks for. Publishing the repo root
+        # would also serve schema.sql, migrations/, docs/ and the test
+        # harness from the live URL.
+        run: |
+          mkdir _site
+          cp index.html app.js config.js styles.css _site/
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: .
+          path: _site
       - id: deployment
         uses: actions/deploy-pages@v4

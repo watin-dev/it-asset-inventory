@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>IT Asset Inventory</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<div id="banner" class="banner" hidden></div>
+
+<section id="login-view" class="login-view" hidden>
+  <form id="login-form" class="card">
+    <h1>IT Asset Inventory</h1>
+    <label for="login-email">Email</label>
+    <input id="login-email" type="email" autocomplete="username" required>
+    <label for="login-password">Password</label>
+    <input id="login-password" type="password" autocomplete="current-password" required>
+    <button type="submit">Sign in</button>
+  </form>
+</section>
+
+<section id="app-view" hidden>
+  <header class="topbar">
+    <h1>IT Asset Inventory</h1>
+    <div class="topbar-right">
+      <span id="user-email"></span>
+      <button id="logout-button" type="button">Sign out</button>
+    </div>
+  </header>
+
+  <div class="toolbar">
+    <input id="search-input" type="search" placeholder="Search tag, name, or person">
+    <select id="filter-category"><option value="">All categories</option></select>
+    <select id="filter-status"><option value="">All statuses</option></select>
+    <button id="add-button" type="button">Add asset</button>
+  </div>
+
+  <table class="assets">
+    <thead>
+      <tr>
+        <th>Asset tag</th><th>Name</th><th>Category</th><th>Status</th>
+        <th>Assigned to</th><th>Location</th><th>Note</th><th>Updated</th><th></th>
+      </tr>
+    </thead>
+    <tbody id="asset-tbody"></tbody>
+  </table>
+</section>
+
+<dialog id="asset-dialog">
+  <form id="asset-form" method="dialog">
+    <h2 id="dialog-title">Add asset</h2>
+    <input id="field-id" type="hidden">
+    <label for="field-asset-tag">Asset tag *</label>
+    <input id="field-asset-tag" required>
+    <label for="field-name">Name *</label>
+    <input id="field-name" required>
+    <label for="field-category">Category</label>
+    <select id="field-category"></select>
+    <label for="field-status">Status</label>
+    <select id="field-status"></select>
+    <label for="field-assigned-to">Assigned to</label>
+    <input id="field-assigned-to">
+    <label for="field-location">Location</label>
+    <input id="field-location">
+    <label for="field-note">Note</label>
+    <textarea id="field-note" rows="3"></textarea>
+    <menu>
+      <button id="dialog-cancel" type="button">Cancel</button>
+      <button type="submit" value="save">Save</button>
+    </menu>
+  </form>
+</dialog>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>

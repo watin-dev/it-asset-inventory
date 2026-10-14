@@ -151,10 +151,32 @@ function renderAssets(rows) {
     .join("");
 }
 
-// Replaced in Task 5 with real search and filter logic.
+// --- Search and filter --------------------------------------------------
+
+// Filters the rows already in memory. Fine up to a few thousand assets;
+// past that, move this to a server-side ilike query in loadAssets.
 function applyFilters() {
-  renderAssets(allAssets);
+  const term = el("search-input").value.trim().toLowerCase();
+  const category = el("filter-category").value;
+  const status = el("filter-status").value;
+
+  const rows = allAssets.filter((asset) => {
+    if (category && asset.category !== category) return false;
+    if (status && asset.status !== status) return false;
+    if (!term) return true;
+    const haystack = [asset.asset_tag, asset.name, asset.assigned_to]
+      .filter(Boolean)
+      .join(" ")
+      .toLowerCase();
+    return haystack.includes(term);
+  });
+
+  renderAssets(rows);
 }
+
+el("search-input").addEventListener("input", applyFilters);
+el("filter-category").addEventListener("change", applyFilters);
+el("filter-status").addEventListener("change", applyFilters);
 
 // --- Dropdowns ----------------------------------------------------------
 

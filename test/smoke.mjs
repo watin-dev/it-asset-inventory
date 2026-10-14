@@ -261,5 +261,94 @@ check("add dialog clears the tag", document.getElementById("field-asset-tag").va
 check("category filter lists the six categories", (document.getElementById("filter-category").innerHTML.match(/<option/g) || []).length, 7);
 check("status filter lists the four statuses", (document.getElementById("filter-status").innerHTML.match(/<option/g) || []).length, 5);
 
+// --- Task 5: search and filter ------------------------------------------
+
+const search = document.getElementById("search-input");
+const catFilter = document.getElementById("filter-category");
+const statusFilter = document.getElementById("filter-status");
+
+globalThis.__setQuery({
+  data: [
+    { id: "1", asset_tag: "CKP-LT-0001", name: "ThinkPad T14", category: "Laptop", status: "In use", assigned_to: "Somchai", location: "HQ 4F", note: null, updated_at: "2026-10-14T03:00:00Z" },
+    { id: "2", asset_tag: "CKP-LT-0002", name: "MacBook Air", category: "Laptop", status: "Spare", assigned_to: "Nattapong", location: "HQ 4F", note: null, updated_at: "2026-10-13T03:00:00Z" },
+    { id: "3", asset_tag: "CKP-MN-0001", name: "Dell U2419", category: "Monitor", status: "In use", assigned_to: "Somchai", location: "HQ 5F", note: null, updated_at: "2026-10-12T03:00:00Z" },
+    { id: "4", asset_tag: "CKP-PH-0001", name: "iPhone 14", category: "Phone", status: "Retired", assigned_to: null, location: "Store", note: null, updated_at: "2026-10-11T03:00:00Z" },
+  ],
+  error: null,
+});
+await app.loadAssets();
+
+// The empty state is itself a <tr>, so it must not be counted as a result.
+const shown = () =>
+  tbody.innerHTML.includes('class="empty"')
+    ? 0
+    : (tbody.innerHTML.match(/<tr>/g) || []).length;
+const reset = () => {
+  search.value = "";
+  catFilter.value = "";
+  statusFilter.value = "";
+  app.applyFilters();
+};
+
+check("no filters shows every row", shown(), 4);
+
+search.value = "MN-0001";
+app.applyFilters();
+check("search matches an asset tag", shown(), 1);
+
+reset();
+search.value = "MacBook";
+app.applyFilters();
+check("search matches a name", shown(), 1);
+
+reset();
+search.value = "Somchai";
+app.applyFilters();
+check("search matches an assigned person", shown(), 2);
+
+reset();
+search.value = "thinkpad";
+app.applyFilters();
+check("search is case-insensitive", shown(), 1);
+
+reset();
+search.value = "  ThinkPad  ";
+app.applyFilters();
+check("search ignores surrounding whitespace", shown(), 1);
+
+reset();
+catFilter.value = "Laptop";
+app.applyFilters();
+check("category filter narrows the list", shown(), 2);
+
+statusFilter.value = "Spare";
+app.applyFilters();
+check("category and status filters combine", shown(), 1);
+
+reset();
+catFilter.value = "Laptop";
+search.value = "Somchai";
+app.applyFilters();
+check("category and search combine", shown(), 1);
+
+reset();
+search.value = "Store";
+app.applyFilters();
+check("search does not match the location column", shown(), 0);
+
+// Review Focus 5: no matches must look deliberate, not like a failed load.
+reset();
+search.value = "zzzzzz";
+app.applyFilters();
+check("no matches shows the empty state", tbody.innerHTML.includes("No assets match."), true);
+
+reset();
+check("clearing every filter restores the full list", shown(), 4);
+
+// A row whose assigned_to is null must not break the search.
+search.value = "iPhone";
+app.applyFilters();
+check("search works on a row with a null assigned person", shown(), 1);
+
 console.log(`\n${pass}/${pass + fail} checks passed`);
 process.exit(fail === 0 ? 0 : 1);

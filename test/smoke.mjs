@@ -19,7 +19,7 @@ src = src.replace(
 );
 // Expose the internals the harness drives. Appended after the real body, so
 // anything reachable here was also reachable to the real code.
-src += "\nglobalThis.__app = { loadAssets, renderAssets, escapeHtml, applyFilters, showBanner, get allAssets() { return allAssets; } };\n";
+src += "\nglobalThis.__app = { loadAssets, renderAssets, escapeHtml, applyFilters, showBanner, saveAsset, deleteAsset, openDialog, get allAssets() { return allAssets; } };\n";
 
 writeFileSync(OUT, src);
 
@@ -33,12 +33,27 @@ class FakeEl {
     this.className = "";
     this.hidden = true;
     this.value = "";
+    this.open = false;
     this.listeners = {};
   }
   addEventListener(type, fn) {
     this.listeners[type] = fn;
   }
+  showModal() {
+    this.open = true;
+  }
+  close() {
+    this.open = false;
+  }
 }
+
+let confirmAnswer = true;
+globalThis.__setConfirm = (answer) => {
+  confirmAnswer = answer;
+};
+globalThis.window = {
+  confirm: () => confirmAnswer,
+};
 
 const els = new Map();
 globalThis.document = {
@@ -56,15 +71,50 @@ globalThis.__setQuery = (result, throws = null) => {
   queryThrows = throws;
 };
 
+// Records what the last write sent, so tests can assert on the payload.
+let lastWrite = null;
+globalThis.__lastWrite = () => lastWrite;
+
+function settle() {
+  if (queryThrows) return Promise.reject(queryThrows);
+  return Promise.resolve(queryResult);
+}
+
 const builder = {
   select() {
     return this;
   },
   order() {
-    if (queryThrows) return Promise.reject(queryThrows);
-    return Promise.resolve(queryResult);
+    return settle();
+  },
+  // insert/update/delete are awaited directly, so each returns a thenable
+  // that also carries .eq() for the chained forms.
+  insert(values) {
+    lastWrite = { op: "insert", values };
+    return makeThenable();
+  },
+  update(values) {
+    lastWrite = { op: "update", values };
+    return makeThenable();
+  },
+  delete() {
+    lastWrite = { op: "delete" };
+    return makeThenable();
   },
 };
+
+function makeThenable() {
+  const t = {
+    eq(column, value) {
+      if (lastWrite) lastWrite.eq = { column, value };
+      return t;
+    },
+    then(resolve, reject) {
+      return settle().then(resolve, reject);
+    },
+  };
+  return t;
+}
 
 globalThis.__stubs = {
   createClient: () => ({
@@ -153,6 +203,63 @@ check("successful load stores the rows", app.allAssets.length, 1);
 check("successful load renders the asset tag", tbody.innerHTML.includes("CKP-LT-0001"), true);
 check("successful load clears any previous banner", banner.hidden, true);
 check("a null field renders as empty, not the string null", tbody.innerHTML.includes("null"), false);
+
+// --- Task 4: writes -----------------------------------------------------
+
+const dialog = document.getElementById("asset-dialog");
+
+// 8. Review Focus 1: a duplicate asset tag gets a readable message, and the
+//    dialog is left open so the entered values can be corrected.
+dialog.showModal();
+globalThis.__setQuery({ data: null, error: { code: "23505", message: 'duplicate key value violates unique constraint "assets_asset_tag_key"' } });
+const dupSaved = await app.saveAsset({ id: null, asset_tag: "CKP-LT-0001", name: "Another" });
+check("duplicate tag save reports failure", dupSaved, false);
+check("duplicate tag message is readable", banner.textContent, 'Asset tag "CKP-LT-0001" already exists.');
+check("duplicate tag message hides the constraint name", banner.textContent.includes("assets_asset_tag_key"), false);
+check("dialog stays open after a failed save", dialog.open, true);
+
+// 9. An insert sends no id column; an update targets one row by id.
+globalThis.__setQuery({ data: null, error: null });
+await app.saveAsset({ id: null, asset_tag: "CKP-LT-0002", name: "Dell U2419", category: null });
+check("new asset uses insert", globalThis.__lastWrite().op, "insert");
+check("insert payload carries no id", "id" in globalThis.__lastWrite().values, false);
+
+await app.saveAsset({ id: "abc", asset_tag: "CKP-LT-0002", name: "Dell U2419" });
+check("existing asset uses update", globalThis.__lastWrite().op, "update");
+check("update targets the row by id", globalThis.__lastWrite().eq.value, "abc");
+
+// 10. A save that fails for another reason says so without the 23505 wording.
+globalThis.__setQuery({ data: null, error: { code: "42501", message: "permission denied" } });
+const denied = await app.saveAsset({ id: null, asset_tag: "X", name: "Y" });
+check("non-duplicate save failure reports failure", denied, false);
+check("non-duplicate save failure shows its own message", banner.textContent, "Could not save: permission denied");
+
+// 11. Delete asks first: answering no must not issue a delete.
+globalThis.__setQuery({ data: null, error: null });
+await app.saveAsset({ id: null, asset_tag: "marker", name: "marker" });
+globalThis.__setConfirm(false);
+await app.deleteAsset("abc", "CKP-LT-0001");
+check("declining the confirm issues no delete", globalThis.__lastWrite().op, "insert");
+
+globalThis.__setConfirm(true);
+await app.deleteAsset("abc", "CKP-LT-0001");
+check("accepting the confirm issues a delete", globalThis.__lastWrite().op, "delete");
+check("delete targets the row by id", globalThis.__lastWrite().eq.value, "abc");
+
+// 12. Editing pre-fills the dialog from the row.
+app.openDialog({ id: "7", asset_tag: "CKP-MN-0003", name: "Dell U2419", category: "Monitor", status: "Spare", assigned_to: null, location: "Store", note: null });
+check("edit dialog is titled Edit asset", document.getElementById("dialog-title").textContent, "Edit asset");
+check("edit dialog pre-fills the tag", document.getElementById("field-asset-tag").value, "CKP-MN-0003");
+check("edit dialog pre-fills the category", document.getElementById("field-category").value, "Monitor");
+check("edit dialog leaves a null field blank", document.getElementById("field-assigned-to").value, "");
+
+app.openDialog(null);
+check("add dialog is titled Add asset", document.getElementById("dialog-title").textContent, "Add asset");
+check("add dialog clears the tag", document.getElementById("field-asset-tag").value, "");
+
+// 13. Both dropdowns offer exactly the spec's values.
+check("category filter lists the six categories", (document.getElementById("filter-category").innerHTML.match(/<option/g) || []).length, 7);
+check("status filter lists the four statuses", (document.getElementById("filter-status").innerHTML.match(/<option/g) || []).length, 5);
 
 console.log(`\n${pass}/${pass + fail} checks passed`);
 process.exit(fail === 0 ? 0 : 1);

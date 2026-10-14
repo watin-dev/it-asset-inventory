@@ -156,6 +156,119 @@ function applyFilters() {
   renderAssets(allAssets);
 }
 
+// --- Dropdowns ----------------------------------------------------------
+
+function populateSelect(select, values, blankLabel) {
+  select.innerHTML =
+    `<option value="">${blankLabel}</option>` +
+    values.map((v) => `<option value="${v}">${v}</option>`).join("");
+}
+
+populateSelect(el("filter-category"), CATEGORIES, "All categories");
+populateSelect(el("filter-status"), STATUSES, "All statuses");
+populateSelect(el("field-category"), CATEGORIES, "—");
+populateSelect(el("field-status"), STATUSES, "—");
+
+// --- Add / edit dialog --------------------------------------------------
+
+function openDialog(asset) {
+  el("dialog-title").textContent = asset ? "Edit asset" : "Add asset";
+  el("field-id").value = asset?.id ?? "";
+  el("field-asset-tag").value = asset?.asset_tag ?? "";
+  el("field-name").value = asset?.name ?? "";
+  el("field-category").value = asset?.category ?? "";
+  el("field-status").value = asset?.status ?? "";
+  el("field-assigned-to").value = asset?.assigned_to ?? "";
+  el("field-location").value = asset?.location ?? "";
+  el("field-note").value = asset?.note ?? "";
+  el("asset-dialog").showModal();
+}
+
+el("add-button").addEventListener("click", () => openDialog(null));
+el("dialog-cancel").addEventListener("click", () => el("asset-dialog").close());
+
+// --- Writes -------------------------------------------------------------
+
+const orNull = (value) => (value.trim() === "" ? null : value.trim());
+
+async function saveAsset(fields) {
+  const { id, ...values } = fields;
+  const query = id
+    ? supabase.from("assets").update(values).eq("id", id)
+    : supabase.from("assets").insert(values);
+
+  let result;
+  try {
+    result = await query;
+  } catch (networkError) {
+    showBanner(`Could not reach the database: ${networkError.message}`);
+    return false;
+  }
+  const { error } = result;
+  if (error) {
+    if (!requireSession(error)) return false;
+    // 23505 is the Postgres unique-violation code; assets has one unique column.
+    if (error.code === "23505") {
+      showBanner(`Asset tag "${values.asset_tag}" already exists.`);
+    } else {
+      showBanner(`Could not save: ${error.message}`);
+    }
+    return false;
+  }
+  return true;
+}
+
+el("asset-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  clearBanner();
+  const fields = {
+    id: el("field-id").value || null,
+    asset_tag: el("field-asset-tag").value.trim(),
+    name: el("field-name").value.trim(),
+    category: orNull(el("field-category").value),
+    status: orNull(el("field-status").value),
+    assigned_to: orNull(el("field-assigned-to").value),
+    location: orNull(el("field-location").value),
+    note: orNull(el("field-note").value),
+  };
+  const saved = await saveAsset(fields);
+  if (!saved) return;
+  el("asset-dialog").close();
+  await loadAssets();
+});
+
+async function deleteAsset(id, label) {
+  if (!window.confirm(`Delete asset "${label}"? This cannot be undone.`)) return;
+  clearBanner();
+  let result;
+  try {
+    result = await supabase.from("assets").delete().eq("id", id);
+  } catch (networkError) {
+    showBanner(`Could not reach the database: ${networkError.message}`);
+    return;
+  }
+  const { error } = result;
+  if (error) {
+    if (!requireSession(error)) return;
+    showBanner(`Could not delete: ${error.message}`);
+    return;
+  }
+  await loadAssets();
+}
+
+// One listener on the tbody — rows are re-rendered constantly.
+el("asset-tbody").addEventListener("click", (event) => {
+  const editId = event.target.dataset.edit;
+  const deleteId = event.target.dataset.delete;
+  if (editId) {
+    const asset = allAssets.find((a) => a.id === editId);
+    if (asset) openDialog(asset);
+  } else if (deleteId) {
+    const asset = allAssets.find((a) => a.id === deleteId);
+    if (asset) deleteAsset(asset.id, asset.asset_tag);
+  }
+});
+
 // --- Bootstrap ----------------------------------------------------------
 //
 // Must stay last: it runs loadAssets, which reads `allAssets`, and a `let`

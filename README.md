@@ -9,21 +9,29 @@ Supabase Postgres; the site is served from GitHub Pages. No build step.
 2. Open the SQL editor and run the contents of `schema.sql`.
 3. **Turn off public sign-up.** Go to **Authentication > Sign In / Providers
    > Email** and set **Allow new users to sign up** to off. Every signed-in
-   user has full read and write access to the whole inventory, so an open
-   sign-up endpoint means any stranger can create an account and get it.
-   This is the single most important setup step.
+   user can read the whole inventory, so an open sign-up endpoint means any
+   stranger can create an account and read it. Roles limit who can *write*;
+   they do not limit who can look. This is the single most important setup
+   step.
 4. Go to **Authentication > Users** and add an account for each person who
    should have access. The app has no sign-up form by design.
-5. Go to **Project Settings > API** and copy the Project URL and the
+5. Make yourself an admin. Every account starts read-only, so until you do
+   this, nobody can add or change an asset:
+
+   ```sql
+   update public.profiles set role = 'admin'
+   where id = (select id from auth.users where email = 'you@example.com');
+   ```
+6. Go to **Project Settings > API** and copy the Project URL and the
    `anon` `public` key.
-6. Put both into `config.js`:
+7. Put both into `config.js`:
 
    ```js
    export const SUPABASE_URL = "https://YOURPROJECT.supabase.co";
    export const SUPABASE_ANON_KEY = "eyJ...";
    ```
 
-7. Serve the folder and open it in a browser:
+8. Serve the folder and open it in a browser:
 
    ```bash
    python -m http.server 8080
@@ -31,6 +39,29 @@ Supabase Postgres; the site is served from GitHub Pages. No build step.
 
    Then go to `http://localhost:8080`. Opening the file directly with
    `file://` does not work — ES module imports need a real origin.
+
+## Roles
+
+One shared inventory. Everyone signed in reads all of it; only admins add,
+edit or delete. New accounts start as `viewer`.
+
+Roles live in `public.profiles` and are changed only from the Supabase SQL
+editor — the table has no write policy, so the app cannot change them even
+if someone edits the page in their browser:
+
+```sql
+update public.profiles set role = 'admin' where id = '<user uuid>';
+update public.profiles set role = 'viewer' where id = '<user uuid>';
+select u.email, p.role from public.profiles p join auth.users u on u.id = p.id;
+```
+
+A viewer sees the inventory and the filters, with no Add button and no row
+actions, and a `read-only` badge beside their email. Hiding the buttons is a
+courtesy; the RLS policies are the enforcement.
+
+**Upgrading an existing project:** run `migrations/001-roles.sql` in the SQL
+editor. Read its header first — you must put your own email in it, or it
+refuses to finish and rolls back.
 
 The `anon` key is designed to be public — Row Level Security is what
 protects the data. Never put the `service_role` key in this repository.
@@ -53,7 +84,7 @@ node test/smoke.mjs
 
 `test/smoke.mjs` loads the real `app.js` with a stubbed DOM and a stubbed
 Supabase client, then exercises the rendering, escaping, error, auth-event,
-write and filter paths, including the form submit handler and the row
+role, write and filter paths, including the form submit handler and the row
 Edit/Delete wiring. It needs no Supabase project, no npm install, and runs
 in the deploy workflow before publishing.
 
@@ -91,7 +122,27 @@ Run all of these before trusting the app with real records.
     dropdown list leaves that category intact after saving.
 12. Deleting a user in Authentication > Users succeeds even when that user
     created assets.
-13. Signed out, running this in the browser console returns zero rows,
+13. Signed in as a viewer, the Add button and the row Edit/Delete buttons
+    are absent, and the topbar shows `read-only`.
+14. Signed in as a viewer, the inventory, search and filters all still work.
+15. Promoting a viewer to admin in SQL and signing out and back in makes the
+    Add button appear.
+16. A viewer who gets a write through anyway sees "You have read-only
+    access.", stays signed in, and is **not** returned to the login form.
+    Reproduce from the console while signed in as a viewer:
+
+    ```js
+    const { createClient } = await import("https://esm.sh/@supabase/supabase-js@2.45.4");
+    const { SUPABASE_URL, SUPABASE_ANON_KEY } = await import("./config.js");
+    const c = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+    console.log(await c.from("assets").insert({ asset_tag: "X", name: "X" }));
+    ```
+
+    Expect error code `42501`.
+17. A viewer cannot change their own role:
+    `update public.profiles set role = 'admin'` from the app's client returns
+    zero rows.
+18. Signed out, running this in the browser console returns zero rows,
     proving RLS is active:
 
     ```js

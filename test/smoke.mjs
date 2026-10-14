@@ -19,7 +19,7 @@ src = src.replace(
 );
 // Expose the internals the harness drives. Appended after the real body, so
 // anything reachable here was also reachable to the real code.
-src += "\nglobalThis.__app = { loadAssets, renderAssets, escapeHtml, applyFilters, showBanner, saveAsset, deleteAsset, openDialog, get allAssets() { return allAssets; } };\n";
+src += "\nglobalThis.__app = { loadAssets, renderAssets, escapeHtml, applyFilters, showBanner, saveAsset, deleteAsset, openDialog, get allAssets() { return allAssets; }, get isAdmin() { return isAdmin; }, get pendingSignIn() { return pendingSignIn; } };\n";
 
 writeFileSync(OUT, src);
 
@@ -94,6 +94,13 @@ globalThis.__setQuery = (result, throws = null) => {
   queryThrows = throws;
 };
 
+// The profiles table answers separately from assets: a test needs to hand the
+// app a role without disturbing the asset rows it is also asserting on.
+let profileResult = { data: [{ role: "admin" }], error: null };
+globalThis.__setProfile = (result) => {
+  profileResult = result;
+};
+
 // Counts selects, so a test can prove a code path did NOT load the table.
 let selectCount = 0;
 globalThis.__selects = () => selectCount;
@@ -137,12 +144,36 @@ function makeThenable() {
       if (lastWrite) lastWrite.eq = { column, value };
       return t;
     },
+    // A write chains .select() so PostgREST returns the rows it actually
+    // touched. An RLS `using` clause that excludes the row produces an empty
+    // array and no error, which is the only way the app can tell a blocked
+    // update apart from a successful one.
+    select() {
+      if (lastWrite) lastWrite.returning = true;
+      return t;
+    },
     then(resolve, reject) {
       return settle().then(resolve, reject);
     },
   };
   return t;
 }
+
+// The profiles query is a plain awaited select, with no .order() to settle it.
+const profileBuilder = {
+  select() {
+    return this;
+  },
+  eq() {
+    return this;
+  },
+  maybeSingle() {
+    return this;
+  },
+  then(resolve, reject) {
+    return Promise.resolve(profileResult).then(resolve, reject);
+  },
+};
 
 globalThis.__stubs = {
   createClient: () => ({
@@ -155,12 +186,12 @@ globalThis.__stubs = {
       // A restored session, so the bootstrap actually runs loadAssets — that
       // is the path where a mis-ordered `let allAssets` throws.
       getSession: async () => ({
-        data: { session: { user: { email: "tester@example.com" } } },
+        data: { session: { user: { id: "u-boot", email: "tester@example.com" } } },
       }),
       signInWithPassword: async () => ({ error: null }),
       signOut: async () => ({ error: null }),
     },
-    from: () => builder,
+    from: (table) => (table === "profiles" ? profileBuilder : builder),
   }),
 };
 
@@ -390,26 +421,33 @@ const authCb = globalThis.__authCb;
 
 check("the auth state handler was actually registered", typeof authCb, "function");
 
+// The sign-in path deliberately does not await its own queries — see app.js.
+// Tests still drive the real callback, then wait for the work it started.
+const fireAuth = async (event, session) => {
+  await authCb(event, session);
+  await app.pendingSignIn;
+};
+
 // Finding 5: the auth handler had never been executed by any check.
 globalThis.__setQuery({ data: [], error: null });
 let before = globalThis.__selects();
-await authCb("INITIAL_SESSION", { user: { email: "tester@example.com" } });
+await fireAuth("INITIAL_SESSION", { user: { email: "tester@example.com" } });
 check("INITIAL_SESSION does not load the table a second time", globalThis.__selects(), before);
 
 before = globalThis.__selects();
-await authCb("SIGNED_IN", { user: { email: "tester@example.com" } });
+await fireAuth("SIGNED_IN", { user: { email: "tester@example.com" } });
 check("SIGNED_IN shows the app view", appView.hidden, false);
 check("SIGNED_IN names the signed-in user", document.getElementById("user-email").textContent, "tester@example.com");
 check("SIGNED_IN loads the table", globalThis.__selects(), before + 1);
 
-await authCb("SIGNED_OUT", null);
+await fireAuth("SIGNED_OUT", null);
 check("SIGNED_OUT shows the login view", loginView.hidden, false);
 check("SIGNED_OUT hides the app view", appView.hidden, true);
 // Finding 10: the previous user's rows must not linger behind the login form.
 check("SIGNED_OUT clears the rendered rows", tbody.innerHTML, "");
 
 before = globalThis.__selects();
-await authCb("TOKEN_REFRESHED", { user: { email: "tester@example.com" } });
+await fireAuth("TOKEN_REFRESHED", { user: { email: "tester@example.com" } });
 check("an hourly token refresh does not reload the table", globalThis.__selects(), before);
 
 // Finding 2: an off-list category must survive an edit, not be blanked.
@@ -463,28 +501,129 @@ check("clicking a non-button cell does nothing", globalThis.__lastWrite().op, "d
 // Finding 3: a dead session that arrives as a thrown error, or as an error
 // code rather than a recognisable message, must still reach the login form.
 globalThis.__setQuery({ data: [], error: null });
-await authCb("SIGNED_IN", { user: { email: "tester@example.com" } });
+await fireAuth("SIGNED_IN", { user: { email: "tester@example.com" } });
 globalThis.__setQuery(null, Object.assign(new Error("Invalid Refresh Token"), { __auth: true }));
 await app.loadAssets();
 check("a thrown auth error returns the user to the login form", loginView.hidden, false);
 
-await authCb("SIGNED_IN", { user: { email: "tester@example.com" } });
+await fireAuth("SIGNED_IN", { user: { email: "tester@example.com" } });
 globalThis.__setQuery({ data: null, error: { code: "PGRST301", message: "no details" } });
 await app.loadAssets();
 check("PGRST301 is treated as a dead session whatever the message says", loginView.hidden, false);
 
-await authCb("SIGNED_IN", { user: { email: "tester@example.com" } });
+await fireAuth("SIGNED_IN", { user: { email: "tester@example.com" } });
 globalThis.__setQuery({ data: null, error: { code: "42501", message: "permission denied for table assets" } });
 await app.loadAssets();
 check("a permission error is treated as a dead session", loginView.hidden, false);
 
 // A genuine network failure must still read as a network failure.
 globalThis.__setQuery({ data: [], error: null });
-await authCb("SIGNED_IN", { user: { email: "tester@example.com" } });
+await fireAuth("SIGNED_IN", { user: { email: "tester@example.com" } });
 globalThis.__setQuery(null, new TypeError("Failed to fetch"));
 await app.loadAssets();
 check("a real network failure still says so", banner.textContent, "Could not reach the database: Failed to fetch");
 check("a real network failure leaves the user on the app view", appView.hidden, false);
+
+// --- Roles: admin writes, viewer reads ----------------------------------
+
+// Earlier sections left a search term in place; these checks are about what
+// the role renders, not what the filter does.
+reset();
+
+const addButton = document.getElementById("add-button");
+const roleBadge = document.getElementById("user-role");
+const oneRow = {
+  data: [{ id: "9", asset_tag: "CKP-SV-0001", name: "PowerEdge R650", category: "Server", status: "In use", assigned_to: null, location: "DC", note: null, updated_at: "2026-10-14T03:00:00Z" }],
+  error: null,
+};
+
+globalThis.__setProfile({ data: [{ role: "admin" }], error: null });
+globalThis.__setQuery(oneRow);
+await fireAuth("SIGNED_IN", { user: { id: "u1", email: "admin@example.com" } });
+check("an admin is recognised as one", app.isAdmin, true);
+check("an admin sees the Add button", addButton.hidden, false);
+check("an admin's rows carry an Edit button", tbody.innerHTML.includes("data-edit"), true);
+check("an admin's rows carry a Delete button", tbody.innerHTML.includes("data-delete"), true);
+check("the badge names the admin role", roleBadge.textContent, "admin");
+
+globalThis.__setProfile({ data: [{ role: "viewer" }], error: null });
+globalThis.__setQuery(oneRow);
+await fireAuth("SIGNED_IN", { user: { id: "u2", email: "viewer@example.com" } });
+check("a viewer is not an admin", app.isAdmin, false);
+check("a viewer does not see the Add button", addButton.hidden, true);
+check("a viewer's rows carry no Edit button", tbody.innerHTML.includes("data-edit"), false);
+check("a viewer's rows carry no Delete button", tbody.innerHTML.includes("data-delete"), false);
+check("a viewer still sees the asset data", tbody.innerHTML.includes("CKP-SV-0001"), true);
+check("the badge names the read-only role", roleBadge.textContent, "read-only");
+
+// Fail closed: a profile row that cannot be read must not grant write access.
+globalThis.__setProfile({ data: null, error: { message: "permission denied for table profiles" } });
+globalThis.__setQuery(oneRow);
+await fireAuth("SIGNED_IN", { user: { id: "u3", email: "broken@example.com" } });
+check("an unreadable profile falls back to read-only", app.isAdmin, false);
+check("an unreadable profile hides the Add button", addButton.hidden, true);
+
+// A missing profile row is the same case, and must not throw.
+globalThis.__setProfile({ data: [], error: null });
+globalThis.__setQuery(oneRow);
+await fireAuth("SIGNED_IN", { user: { id: "u4", email: "noprofile@example.com" } });
+check("a missing profile row falls back to read-only", app.isAdmin, false);
+
+// Signing out drops the role with everything else.
+await fireAuth("SIGNED_OUT", null);
+check("signing out clears the admin flag", app.isAdmin, false);
+check("signing out clears the role badge", roleBadge.textContent, "");
+
+// --- Roles: a blocked write is not a dead session -----------------------
+
+globalThis.__setProfile({ data: [{ role: "viewer" }], error: null });
+globalThis.__setQuery(oneRow);
+await fireAuth("SIGNED_IN", { user: { id: "u2", email: "viewer@example.com" } });
+
+const READ_ONLY = "You have read-only access. Ask an admin to make this change.";
+
+// An insert the RLS `with check` rejects comes back as 42501. On a select
+// that code means the session is dead; on a write it means the role is wrong,
+// and signing the user out there would be a lie.
+globalThis.__setQuery({ data: null, error: { code: "42501", message: 'new row violates row-level security policy for table "assets"' } });
+const deniedInsert = await app.saveAsset({ id: null, asset_tag: "CKP-LT-0100", name: "New" });
+check("a denied insert reports failure", deniedInsert, false);
+check("a denied insert explains the role, not a session", banner.textContent, READ_ONLY);
+check("a denied insert leaves the user signed in", appView.hidden, false);
+check("a denied insert does not show the login form", loginView.hidden, true);
+
+globalThis.__setConfirm(true);
+globalThis.__setQuery({ data: null, error: { code: "42501", message: "permission denied for table assets" } });
+await app.deleteAsset("9", "CKP-SV-0001");
+check("a denied delete explains the role", banner.textContent, READ_ONLY);
+check("a denied delete leaves the user signed in", appView.hidden, false);
+
+// An update or delete the RLS `using` clause excludes matches no row at all:
+// PostgREST returns an empty array and no error. Without .select() the app
+// would report success for a write that changed nothing.
+globalThis.__setQuery({ data: [], error: null });
+const silentUpdate = await app.saveAsset({ id: "9", asset_tag: "CKP-SV-0001", name: "Renamed" });
+check("an update that touches no row reports failure", silentUpdate, false);
+check("an update that touches no row says so", banner.textContent, "Nothing changed. The asset may have been deleted, or you may not have permission.");
+check("the update asked the database what it touched", globalThis.__lastWrite().returning, true);
+
+globalThis.__setQuery({ data: [], error: null });
+await app.deleteAsset("9", "CKP-SV-0001");
+check("a delete that touches no row says so", banner.textContent, "Nothing changed. The asset may have been deleted, or you may not have permission.");
+check("the delete asked the database what it touched", globalThis.__lastWrite().returning, true);
+
+// The admin happy path still works once rows come back.
+globalThis.__setProfile({ data: [{ role: "admin" }], error: null });
+globalThis.__setQuery(oneRow);
+await fireAuth("SIGNED_IN", { user: { id: "u1", email: "admin@example.com" } });
+globalThis.__setQuery({ data: [{ id: "9" }], error: null });
+const realUpdate = await app.saveAsset({ id: "9", asset_tag: "CKP-SV-0001", name: "Renamed" });
+check("an update that touches a row reports success", realUpdate, true);
+
+// A select rejected with 42501 still means the session is gone, not the role.
+globalThis.__setQuery({ data: null, error: { code: "42501", message: "permission denied for table assets" } });
+await app.loadAssets();
+check("a denied select still returns the user to the login form", loginView.hidden, false);
 
 console.log(`\n${pass}/${pass + fail} checks passed`);
 process.exit(fail === 0 ? 0 : 1);

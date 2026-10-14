@@ -90,14 +90,61 @@ function requireSession(error) {
   return false;
 }
 
+// 42501 is ambiguous on its own. Reading assets is allowed for anyone signed
+// in, so a denied select means the session is gone. Writing is allowed only
+// for admins, so a denied write means the role is wrong — and signing a
+// viewer out for being a viewer would be both wrong and baffling. The write
+// paths therefore test this before requireSession.
+function isWriteDenied(error) {
+  if (!error) return false;
+  if (error.code === "42501") return true;
+  return /row-level security|permission denied/i.test(error.message ?? "");
+}
+
+const READ_ONLY_MESSAGE =
+  "You have read-only access. Ask an admin to make this change.";
+
+// An RLS `using` clause that excludes the row is not an error: the statement
+// matches nothing and PostgREST returns an empty array. Reporting success
+// there would tell a viewer their edit was saved when nothing happened.
+const NOTHING_CHANGED_MESSAGE =
+  "Nothing changed. The asset may have been deleted, or you may not have permission.";
+
+function touchedNoRow(data) {
+  return Array.isArray(data) && data.length === 0;
+}
+
 // Everything that must be true when no one is signed in. Clearing the rows is
 // part of it: otherwise the previous user's inventory sits in memory and in
 // the DOM, and flashes on screen before the next user's data arrives.
 function signedOut() {
   allAssets = [];
+  isAdmin = false;
   el("asset-tbody").innerHTML = "";
   el("user-email").textContent = "";
+  el("user-role").textContent = "";
   showView("login");
+}
+
+// --- Roles --------------------------------------------------------------
+//
+// Every signed-in user reads the whole inventory; only admins write. The
+// flag below drives the buttons, and the RLS policies enforce the same rule
+// in the database — hiding a button stops a mistake, not an attacker.
+let isAdmin = false;
+
+// Fails closed. A profile row that is missing, unreadable, or malformed
+// leaves the user read-only rather than handing out write access on an
+// error path.
+async function loadRole() {
+  try {
+    const { data, error } = await supabase.from("profiles").select("role");
+    isAdmin = !error && data?.[0]?.role === "admin";
+  } catch {
+    isAdmin = false;
+  }
+  el("user-role").textContent = isAdmin ? "admin" : "read-only";
+  el("add-button").hidden = !isAdmin;
 }
 
 supabase.auth.onAuthStateChange((event, session) => {
@@ -113,8 +160,18 @@ supabase.auth.onAuthStateChange((event, session) => {
   showView("app");
   // TOKEN_REFRESHED fires roughly hourly on a session that never changed.
   // Reloading there would redraw the table underneath an open edit dialog.
-  if (event === "SIGNED_IN") loadAssets();
+  // The role is re-read on sign-in only, for the same reason.
+  //
+  // Deliberately not awaited. supabase-js runs this callback while it holds
+  // its auth lock, and a query awaited here would wait for a lock the
+  // callback itself is holding. Kicking the work off and returning lets the
+  // lock go. `pendingSignIn` exists so a test can wait for that work.
+  if (event === "SIGNED_IN") {
+    pendingSignIn = loadRole().then(loadAssets);
+  }
 });
+
+let pendingSignIn = Promise.resolve();
 
 // --- Data ---------------------------------------------------------------
 
@@ -172,10 +229,12 @@ function renderAssets(rows) {
         <td>${escapeHtml(row.location)}</td>
         <td>${escapeHtml(row.note)}</td>
         <td>${escapeHtml(formatDate(row.updated_at))}</td>
-        <td class="row-actions">
-          <button type="button" data-edit="${escapeHtml(row.id)}">Edit</button>
-          <button type="button" data-delete="${escapeHtml(row.id)}">Delete</button>
-        </td>
+        <td class="row-actions">${
+          isAdmin
+            ? `<button type="button" data-edit="${escapeHtml(row.id)}">Edit</button>
+          <button type="button" data-delete="${escapeHtml(row.id)}">Delete</button>`
+            : ""
+        }</td>
       </tr>`
     )
     .join("");
@@ -258,9 +317,11 @@ const orNull = (value) => (value.trim() === "" ? null : value.trim());
 
 async function saveAsset(fields) {
   const { id, ...values } = fields;
+  // .select() so the response names the rows actually written. An update a
+  // policy excludes writes nothing and reports no error.
   const query = id
-    ? supabase.from("assets").update(values).eq("id", id)
-    : supabase.from("assets").insert(values);
+    ? supabase.from("assets").update(values).eq("id", id).select()
+    : supabase.from("assets").insert(values).select();
 
   let result;
   try {
@@ -272,8 +333,12 @@ async function saveAsset(fields) {
     showBanner(`Could not reach the database: ${networkError.message}`);
     return false;
   }
-  const { error } = result;
+  const { data, error } = result;
   if (error) {
+    if (isWriteDenied(error)) {
+      showBanner(READ_ONLY_MESSAGE);
+      return false;
+    }
     if (!requireSession(error)) return false;
     // 23505 is the Postgres unique-violation code; assets has one unique column.
     if (error.code === "23505") {
@@ -281,6 +346,10 @@ async function saveAsset(fields) {
     } else {
       showBanner(`Could not save: ${error.message}`);
     }
+    return false;
+  }
+  if (touchedNoRow(data)) {
+    showBanner(NOTHING_CHANGED_MESSAGE);
     return false;
   }
   return true;
@@ -310,7 +379,7 @@ async function deleteAsset(id, label) {
   clearBanner();
   let result;
   try {
-    result = await supabase.from("assets").delete().eq("id", id);
+    result = await supabase.from("assets").delete().eq("id", id).select();
   } catch (networkError) {
     // supabase-js throws, rather than returning an error, when a token
     // refresh fails — so a dead session often arrives here, not below.
@@ -318,10 +387,18 @@ async function deleteAsset(id, label) {
     showBanner(`Could not reach the database: ${networkError.message}`);
     return;
   }
-  const { error } = result;
+  const { data, error } = result;
   if (error) {
+    if (isWriteDenied(error)) {
+      showBanner(READ_ONLY_MESSAGE);
+      return;
+    }
     if (!requireSession(error)) return;
     showBanner(`Could not delete: ${error.message}`);
+    return;
+  }
+  if (touchedNoRow(data)) {
+    showBanner(NOTHING_CHANGED_MESSAGE);
     return;
   }
   await loadAssets();
@@ -349,6 +426,7 @@ const { data: { session: initialSession } } = await supabase.auth.getSession();
 if (initialSession) {
   el("user-email").textContent = initialSession.user.email;
   showView("app");
+  await loadRole();
   await loadAssets();
 } else {
   showView("login");

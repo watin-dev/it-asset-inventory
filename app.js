@@ -75,19 +75,97 @@ function requireSession(error) {
   return true;
 }
 
-supabase.auth.onAuthStateChange((_event, session) => {
+supabase.auth.onAuthStateChange((event, session) => {
+  // INITIAL_SESSION fires once when the client finishes restoring a stored
+  // session. The bootstrap at the end of this file already covers that case,
+  // so handling it here too would load the table twice on every page load.
+  if (event === "INITIAL_SESSION") return;
   if (session) {
     el("user-email").textContent = session.user.email;
     showView("app");
+    loadAssets();
   } else {
     showView("login");
   }
 });
 
+// --- Data ---------------------------------------------------------------
+
+let allAssets = [];
+
+async function loadAssets() {
+  clearBanner();
+  let result;
+  try {
+    result = await supabase
+      .from("assets")
+      .select("*")
+      .order("updated_at", { ascending: false });
+  } catch (networkError) {
+    // fetch rejects outright when the network is down; there is no error field.
+    showBanner(`Could not reach the database: ${networkError.message}`);
+    return;
+  }
+  const { data, error } = result;
+  if (error) {
+    if (!requireSession(error)) return;
+    showBanner(`Could not load assets: ${error.message}`);
+    return;
+  }
+  allAssets = data ?? [];
+  applyFilters();
+}
+
+// --- Rendering ----------------------------------------------------------
+
+function formatDate(iso) {
+  if (!iso) return "";
+  return new Date(iso).toLocaleString();
+}
+
+function renderAssets(rows) {
+  const tbody = el("asset-tbody");
+  if (rows.length === 0) {
+    tbody.innerHTML =
+      '<tr><td class="empty" colspan="9">No assets match.</td></tr>';
+    return;
+  }
+  tbody.innerHTML = rows
+    .map(
+      (row) => `
+      <tr>
+        <td>${escapeHtml(row.asset_tag)}</td>
+        <td>${escapeHtml(row.name)}</td>
+        <td>${escapeHtml(row.category)}</td>
+        <td>${escapeHtml(row.status)}</td>
+        <td>${escapeHtml(row.assigned_to)}</td>
+        <td>${escapeHtml(row.location)}</td>
+        <td>${escapeHtml(row.note)}</td>
+        <td>${escapeHtml(formatDate(row.updated_at))}</td>
+        <td class="row-actions">
+          <button type="button" data-edit="${escapeHtml(row.id)}">Edit</button>
+          <button type="button" data-delete="${escapeHtml(row.id)}">Delete</button>
+        </td>
+      </tr>`
+    )
+    .join("");
+}
+
+// Replaced in Task 5 with real search and filter logic.
+function applyFilters() {
+  renderAssets(allAssets);
+}
+
+// --- Bootstrap ----------------------------------------------------------
+//
+// Must stay last: it runs loadAssets, which reads `allAssets`, and a `let`
+// binding is unreachable until its own declaration has executed.
+
 const { data: { session: initialSession } } = await supabase.auth.getSession();
 if (initialSession) {
   el("user-email").textContent = initialSession.user.email;
   showView("app");
+  await loadAssets();
 } else {
   showView("login");
 }

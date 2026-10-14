@@ -52,10 +52,24 @@ node test/smoke.mjs
 ```
 
 `test/smoke.mjs` loads the real `app.js` with a stubbed DOM and a stubbed
-Supabase client, then exercises the rendering, escaping, error, write and
-filter paths. It needs no Supabase project, no npm install, and runs in
-the deploy workflow before publishing. It does not cover anything that
-requires a live backend — that is what the checklist below is for.
+Supabase client, then exercises the rendering, escaping, error, auth-event,
+write and filter paths, including the form submit handler and the row
+Edit/Delete wiring. It needs no Supabase project, no npm install, and runs
+in the deploy workflow before publishing.
+
+What it cannot see, and why the checklist below still matters:
+
+- **Anything CSS.** The stubbed elements have no stylesheet behind them, so
+  layout and visibility bugs are invisible to it. One such bug — the sign-in
+  card staying on screen after sign-in, because an author `display` rule
+  beats the user agent's `[hidden]` — passed every stub check and was only
+  caught in a real browser.
+- **Real Supabase behaviour.** Error codes, RLS enforcement, the triggers,
+  token refresh and session persistence are all stubbed. The stubs encode
+  what Supabase is believed to return, which is not the same as what it does.
+- **Real browser semantics** beyond the few deliberately modelled (a
+  `<select>` rejecting an off-list value is modelled; focus, validation,
+  `<dialog>` behaviour and event bubbling are not).
 
 ## Manual test checklist
 
@@ -70,8 +84,14 @@ Run all of these before trusting the app with real records.
 6. Deleting an asset asks for confirmation and then removes the row.
 7. Search matches on asset tag, name, and assigned person.
 8. Category and status filters combine correctly with the search text.
-9. Signing out returns to the login form.
-10. Signed out, running this in the browser console returns zero rows,
+9. Signing out returns to the login form, and the previous user's rows are
+    gone from the table behind it.
+10. Signed in, the sign-in card is **not** visible anywhere on the page.
+11. Editing an asset whose category came from an import and is not in the
+    dropdown list leaves that category intact after saving.
+12. Deleting a user in Authentication > Users succeeds even when that user
+    created assets.
+13. Signed out, running this in the browser console returns zero rows,
     proving RLS is active:
 
     ```js

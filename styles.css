@@ -10,6 +10,13 @@
 
 * { box-sizing: border-box; }
 
+/* `[hidden] { display: none }` comes from the user-agent stylesheet, so any
+   author rule that sets `display` beats it no matter how weak its selector.
+   .login-view below sets `display: flex`, which would leave the sign-in card
+   on screen for every signed-in user. This puts the attribute back in
+   charge. */
+[hidden] { display: none !important; }
+
 body {
   margin: 0;
   font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;

@@ -11,27 +11,40 @@ create table if not exists public.assets (
   note        text,
   created_at  timestamptz not null default now(),
   updated_at  timestamptz not null default now(),
-  owner_id    uuid default auth.uid() references auth.users (id)
+  -- on delete set null: without it, deleting a departed employee's account
+  -- fails with a foreign-key violation for every asset they ever created.
+  owner_id    uuid default auth.uid() references auth.users (id) on delete set null
 );
 
 create index if not exists assets_updated_at_idx on public.assets (updated_at desc);
 
--- Keep updated_at honest on every edit.
-create or replace function public.set_updated_at()
+-- Keep the timestamps honest. A column default does not stop a client from
+-- sending its own value through PostgREST, so both columns are set here
+-- instead: created_at is fixed at insert and never moves, and updated_at is
+-- stamped on every write. Otherwise any signed-in user could post
+-- updated_at = '2099-01-01' and pin a row to the top of the list for good.
+create or replace function public.set_timestamps()
 returns trigger
 language plpgsql
+set search_path = ''
 as $$
 begin
+  if tg_op = 'INSERT' then
+    new.created_at = now();
+  else
+    new.created_at = old.created_at;
+  end if;
   new.updated_at = now();
   return new;
 end;
 $$;
 
 drop trigger if exists assets_set_updated_at on public.assets;
-create trigger assets_set_updated_at
-  before update on public.assets
+drop trigger if exists assets_set_timestamps on public.assets;
+create trigger assets_set_timestamps
+  before insert or update on public.assets
   for each row
-  execute function public.set_updated_at();
+  execute function public.set_timestamps();
 
 -- owner_id records who created a row. PostgREST lets the client send any
 -- column value, and a column default does not stop it, so owner_id is forced
@@ -40,6 +53,7 @@ create trigger assets_set_updated_at
 create or replace function public.force_owner_id()
 returns trigger
 language plpgsql
+set search_path = ''
 as $$
 begin
   if tg_op = 'INSERT' then

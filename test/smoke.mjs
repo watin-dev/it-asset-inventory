@@ -32,12 +32,35 @@ class FakeEl {
     this.textContent = "";
     this.className = "";
     this.hidden = true;
-    this.value = "";
     this.open = false;
     this.listeners = {};
+    this._value = "";
   }
+
+  // A <select> can only hold a value one of its options offers. Assigning it
+  // anything else sets selectedIndex to -1 and reads back as "". Modelling
+  // that is the whole point: a plain property would hide the bug where an
+  // off-list category is silently blanked when a row is edited.
+  get value() {
+    return this._value;
+  }
+  set value(v) {
+    if (this.innerHTML.includes("<option")) {
+      const allowed = [...this.innerHTML.matchAll(/<option value="([^"]*)"/g)].map(
+        (m) => m[1]
+      );
+      this._value = allowed.includes(v) ? v : "";
+      return;
+    }
+    this._value = v;
+  }
+
   addEventListener(type, fn) {
     this.listeners[type] = fn;
+  }
+  async dispatch(type, event = {}) {
+    if (!this.listeners[type]) throw new Error(`no ${type} listener on #${this.id}`);
+    return this.listeners[type]({ preventDefault() {}, ...event });
   }
   showModal() {
     this.open = true;
@@ -71,6 +94,10 @@ globalThis.__setQuery = (result, throws = null) => {
   queryThrows = throws;
 };
 
+// Counts selects, so a test can prove a code path did NOT load the table.
+let selectCount = 0;
+globalThis.__selects = () => selectCount;
+
 // Records what the last write sent, so tests can assert on the payload.
 let lastWrite = null;
 globalThis.__lastWrite = () => lastWrite;
@@ -85,6 +112,7 @@ const builder = {
     return this;
   },
   order() {
+    selectCount += 1;
     return settle();
   },
   // insert/update/delete are awaited directly, so each returns a thenable
@@ -119,7 +147,11 @@ function makeThenable() {
 globalThis.__stubs = {
   createClient: () => ({
     auth: {
-      onAuthStateChange() {},
+      // Captured so tests can fire real auth events; a no-op stub would
+      // leave the whole handler unexecuted.
+      onAuthStateChange(cb) {
+        globalThis.__authCb = cb;
+      },
       // A restored session, so the bootstrap actually runs loadAssets — that
       // is the path where a mis-ordered `let allAssets` throws.
       getSession: async () => ({
@@ -180,9 +212,9 @@ check("network failure shows a banner", banner.hidden, false);
 check("network failure banner names the cause", banner.textContent, "Could not reach the database: Failed to fetch");
 
 // 5. A Supabase-reported error surfaces too.
-globalThis.__setQuery({ data: null, error: { message: "permission denied", code: "42501" } });
+globalThis.__setQuery({ data: null, error: { message: "canceling statement due to statement timeout", code: "57014" } });
 await app.loadAssets();
-check("query error shows a banner", banner.textContent, "Could not load assets: permission denied");
+check("a non-auth query error shows a banner", banner.textContent, "Could not load assets: canceling statement due to statement timeout");
 
 // 6. Review Focus 2: a dead session returns the user to the login form.
 globalThis.__setQuery({ data: null, error: { message: "JWT expired" } });
@@ -229,10 +261,10 @@ check("existing asset uses update", globalThis.__lastWrite().op, "update");
 check("update targets the row by id", globalThis.__lastWrite().eq.value, "abc");
 
 // 10. A save that fails for another reason says so without the 23505 wording.
-globalThis.__setQuery({ data: null, error: { code: "42501", message: "permission denied" } });
-const denied = await app.saveAsset({ id: null, asset_tag: "X", name: "Y" });
+globalThis.__setQuery({ data: null, error: { code: "23502", message: 'null value in column "name" violates not-null constraint' } });
+const denied = await app.saveAsset({ id: null, asset_tag: "X", name: "" });
 check("non-duplicate save failure reports failure", denied, false);
-check("non-duplicate save failure shows its own message", banner.textContent, "Could not save: permission denied");
+check("non-duplicate save failure shows its own message", banner.textContent, 'Could not save: null value in column "name" violates not-null constraint');
 
 // 11. Delete asks first: answering no must not issue a delete.
 globalThis.__setQuery({ data: null, error: null });
@@ -349,6 +381,110 @@ check("clearing every filter restores the full list", shown(), 4);
 search.value = "iPhone";
 app.applyFilters();
 check("search works on a row with a null assigned person", shown(), 1);
+
+// --- Review findings: auth handler, event wiring, off-list values -------
+
+const loginView = document.getElementById("login-view");
+const appView = document.getElementById("app-view");
+const authCb = globalThis.__authCb;
+
+check("the auth state handler was actually registered", typeof authCb, "function");
+
+// Finding 5: the auth handler had never been executed by any check.
+globalThis.__setQuery({ data: [], error: null });
+let before = globalThis.__selects();
+await authCb("INITIAL_SESSION", { user: { email: "tester@example.com" } });
+check("INITIAL_SESSION does not load the table a second time", globalThis.__selects(), before);
+
+before = globalThis.__selects();
+await authCb("SIGNED_IN", { user: { email: "tester@example.com" } });
+check("SIGNED_IN shows the app view", appView.hidden, false);
+check("SIGNED_IN names the signed-in user", document.getElementById("user-email").textContent, "tester@example.com");
+check("SIGNED_IN loads the table", globalThis.__selects(), before + 1);
+
+await authCb("SIGNED_OUT", null);
+check("SIGNED_OUT shows the login view", loginView.hidden, false);
+check("SIGNED_OUT hides the app view", appView.hidden, true);
+// Finding 10: the previous user's rows must not linger behind the login form.
+check("SIGNED_OUT clears the rendered rows", tbody.innerHTML, "");
+
+before = globalThis.__selects();
+await authCb("TOKEN_REFRESHED", { user: { email: "tester@example.com" } });
+check("an hourly token refresh does not reload the table", globalThis.__selects(), before);
+
+// Finding 2: an off-list category must survive an edit, not be blanked.
+globalThis.__setQuery({
+  data: [{ id: "9", asset_tag: "CKP-SV-0001", name: "PowerEdge R650", category: "Server", status: "In use", assigned_to: null, location: "DC", note: null, updated_at: "2026-10-14T03:00:00Z" }],
+  error: null,
+});
+await app.loadAssets();
+app.openDialog(app.allAssets[0]);
+check("editing keeps a category that is not in the fixed list", document.getElementById("field-category").value, "Server");
+
+globalThis.__setQuery({ data: null, error: null });
+await document.getElementById("asset-form").dispatch("submit");
+check("saving an off-list category does not erase it", globalThis.__lastWrite().values.category, "Server");
+
+// Finding 5: the submit handler and the row click delegation were unexecuted.
+app.openDialog(null);
+document.getElementById("field-asset-tag").value = "CKP-LT-0009";
+document.getElementById("field-name").value = "New laptop";
+globalThis.__setQuery({ data: null, error: null });
+await document.getElementById("asset-form").dispatch("submit");
+check("a successful submit closes the dialog", dialog.open, false);
+
+app.openDialog(null);
+document.getElementById("field-asset-tag").value = "CKP-LT-0001";
+document.getElementById("field-name").value = "Duplicate";
+globalThis.__setQuery({ data: null, error: { code: "23505", message: "duplicate key" } });
+await document.getElementById("asset-form").dispatch("submit");
+check("a rejected submit leaves the dialog open", dialog.open, true);
+check("a rejected submit keeps the typed tag", document.getElementById("field-asset-tag").value, "CKP-LT-0001");
+dialog.close();
+
+globalThis.__setQuery({
+  data: [{ id: "9", asset_tag: "CKP-SV-0001", name: "PowerEdge R650", category: "Server", status: "In use", assigned_to: null, location: "DC", note: null, updated_at: "2026-10-14T03:00:00Z" }],
+  error: null,
+});
+await app.loadAssets();
+await tbody.dispatch("click", { target: { dataset: { edit: "9" } } });
+check("clicking Edit on a row opens the dialog", dialog.open, true);
+check("clicking Edit loads that row's tag", document.getElementById("field-asset-tag").value, "CKP-SV-0001");
+dialog.close();
+
+globalThis.__setConfirm(true);
+globalThis.__setQuery({ data: null, error: null });
+await tbody.dispatch("click", { target: { dataset: { delete: "9" } } });
+check("clicking Delete on a row issues a delete", globalThis.__lastWrite().op, "delete");
+
+await tbody.dispatch("click", { target: { dataset: {} } });
+check("clicking a non-button cell does nothing", globalThis.__lastWrite().op, "delete");
+
+// Finding 3: a dead session that arrives as a thrown error, or as an error
+// code rather than a recognisable message, must still reach the login form.
+globalThis.__setQuery({ data: [], error: null });
+await authCb("SIGNED_IN", { user: { email: "tester@example.com" } });
+globalThis.__setQuery(null, Object.assign(new Error("Invalid Refresh Token"), { __auth: true }));
+await app.loadAssets();
+check("a thrown auth error returns the user to the login form", loginView.hidden, false);
+
+await authCb("SIGNED_IN", { user: { email: "tester@example.com" } });
+globalThis.__setQuery({ data: null, error: { code: "PGRST301", message: "no details" } });
+await app.loadAssets();
+check("PGRST301 is treated as a dead session whatever the message says", loginView.hidden, false);
+
+await authCb("SIGNED_IN", { user: { email: "tester@example.com" } });
+globalThis.__setQuery({ data: null, error: { code: "42501", message: "permission denied for table assets" } });
+await app.loadAssets();
+check("a permission error is treated as a dead session", loginView.hidden, false);
+
+// A genuine network failure must still read as a network failure.
+globalThis.__setQuery({ data: [], error: null });
+await authCb("SIGNED_IN", { user: { email: "tester@example.com" } });
+globalThis.__setQuery(null, new TypeError("Failed to fetch"));
+await app.loadAssets();
+check("a real network failure still says so", banner.textContent, "Could not reach the database: Failed to fetch");
+check("a real network failure leaves the user on the app view", appView.hidden, false);
 
 console.log(`\n${pass}/${pass + fail} checks passed`);
 process.exit(fail === 0 ? 0 : 1);

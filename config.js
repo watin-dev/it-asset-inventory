@@ -1,5 +1,5 @@
 // Supabase project credentials.
 // The anon key is public by design — Row Level Security protects the data.
 // NEVER put the service_role key in this file.
-export const SUPABASE_URL = "https://YOURPROJECT.supabase.co";
-export const SUPABASE_ANON_KEY = "YOUR_ANON_KEY";
+export const SUPABASE_URL = "https://twsnkngkixjtesiursgv.supabase.co";
+export const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InR3c25rbmdraXhqdGVzaXVyc2d2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTE5Mzk1NzYsImV4cCI6MjEwNzUxNTU3Nn0.SEEFGGqcerjo9g0neRZSFRM06BNytDI-YamgG0SC0kI";

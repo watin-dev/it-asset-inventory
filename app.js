@@ -64,15 +64,40 @@ el("logout-button").addEventListener("click", async () => {
   if (error) showBanner(error.message);
 });
 
-// A dead session must land the user on the login form, not an empty table.
+// A dead session must land the user on the login form, not an empty table or
+// a raw Postgres string.
+//
+// Codes and HTTP status are checked before the message, because PostgREST
+// does not promise its wording is stable. PGRST301/302 are its own
+// JWT-rejected codes; 42501 is Postgres "permission denied", which is what an
+// RLS policy returns once auth.uid() is null. The message test stays as a
+// fallback for GoTrue errors, which carry no code.
+const AUTH_ERROR_CODES = new Set(["PGRST301", "PGRST302", "42501"]);
+
+function isAuthFailure(error) {
+  if (!error) return false;
+  if (AUTH_ERROR_CODES.has(error.code)) return true;
+  if (error.status === 401 || error.status === 403) return true;
+  return /jwt|session|token|not authenticated|authentication/i.test(error.message ?? "");
+}
+
+// Returns false when the caller should stop: the session is gone and the user
+// is already back on the login form.
 function requireSession(error) {
-  const message = error?.message ?? "";
-  if (/jwt|session|token|not authenticated/i.test(message)) {
-    showView("login");
-    showBanner("Session expired. Please sign in again.");
-    return false;
-  }
-  return true;
+  if (!isAuthFailure(error)) return true;
+  signedOut();
+  showBanner("Session expired. Please sign in again.");
+  return false;
+}
+
+// Everything that must be true when no one is signed in. Clearing the rows is
+// part of it: otherwise the previous user's inventory sits in memory and in
+// the DOM, and flashes on screen before the next user's data arrives.
+function signedOut() {
+  allAssets = [];
+  el("asset-tbody").innerHTML = "";
+  el("user-email").textContent = "";
+  showView("login");
 }
 
 supabase.auth.onAuthStateChange((event, session) => {
@@ -80,13 +105,15 @@ supabase.auth.onAuthStateChange((event, session) => {
   // session. The bootstrap at the end of this file already covers that case,
   // so handling it here too would load the table twice on every page load.
   if (event === "INITIAL_SESSION") return;
-  if (session) {
-    el("user-email").textContent = session.user.email;
-    showView("app");
-    loadAssets();
-  } else {
-    showView("login");
+  if (!session) {
+    signedOut();
+    return;
   }
+  el("user-email").textContent = session.user.email;
+  showView("app");
+  // TOKEN_REFRESHED fires roughly hourly on a session that never changed.
+  // Reloading there would redraw the table underneath an open edit dialog.
+  if (event === "SIGNED_IN") loadAssets();
 });
 
 // --- Data ---------------------------------------------------------------
@@ -103,6 +130,9 @@ async function loadAssets() {
       .order("updated_at", { ascending: false });
   } catch (networkError) {
     // fetch rejects outright when the network is down; there is no error field.
+    // supabase-js throws, rather than returning an error, when a token
+    // refresh fails — so a dead session often arrives here, not below.
+    if (!requireSession(networkError)) return;
     showBanner(`Could not reach the database: ${networkError.message}`);
     return;
   }
@@ -180,10 +210,18 @@ el("filter-status").addEventListener("change", applyFilters);
 
 // --- Dropdowns ----------------------------------------------------------
 
-function populateSelect(select, values, blankLabel) {
+function populateSelect(select, values, blankLabel, extraValue = null) {
+  // extraValue keeps a value the database already holds but this list does
+  // not offer. Without it, assigning an off-list value to a <select> sets
+  // selectedIndex to -1, the field reads back as "", and saving would quietly
+  // erase a category or status that came from an import or an older list.
+  const all =
+    extraValue && !values.includes(extraValue) ? [...values, extraValue] : values;
   select.innerHTML =
-    `<option value="">${blankLabel}</option>` +
-    values.map((v) => `<option value="${v}">${v}</option>`).join("");
+    `<option value="">${escapeHtml(blankLabel)}</option>` +
+    all
+      .map((v) => `<option value="${escapeHtml(v)}">${escapeHtml(v)}</option>`)
+      .join("");
 }
 
 populateSelect(el("filter-category"), CATEGORIES, "All categories");
@@ -195,6 +233,11 @@ populateSelect(el("field-status"), STATUSES, "—");
 
 function openDialog(asset) {
   el("dialog-title").textContent = asset ? "Edit asset" : "Add asset";
+  // Rebuild both dropdowns first, carrying this row's own value in case it
+  // predates the current list. Saving must never silently drop a field the
+  // user did not touch.
+  populateSelect(el("field-category"), CATEGORIES, "—", asset?.category ?? null);
+  populateSelect(el("field-status"), STATUSES, "—", asset?.status ?? null);
   el("field-id").value = asset?.id ?? "";
   el("field-asset-tag").value = asset?.asset_tag ?? "";
   el("field-name").value = asset?.name ?? "";
@@ -223,6 +266,9 @@ async function saveAsset(fields) {
   try {
     result = await query;
   } catch (networkError) {
+    // supabase-js throws, rather than returning an error, when a token
+    // refresh fails — so a dead session often arrives here, not below.
+    if (!requireSession(networkError)) return false;
     showBanner(`Could not reach the database: ${networkError.message}`);
     return false;
   }
@@ -266,6 +312,9 @@ async function deleteAsset(id, label) {
   try {
     result = await supabase.from("assets").delete().eq("id", id);
   } catch (networkError) {
+    // supabase-js throws, rather than returning an error, when a token
+    // refresh fails — so a dead session often arrives here, not below.
+    if (!requireSession(networkError)) return;
     showBanner(`Could not reach the database: ${networkError.message}`);
     return;
   }

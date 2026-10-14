@@ -33,7 +33,39 @@ create trigger assets_set_updated_at
   for each row
   execute function public.set_updated_at();
 
+-- owner_id records who created a row. PostgREST lets the client send any
+-- column value, and a column default does not stop it, so owner_id is forced
+-- server-side on insert and frozen on update. Without this, any signed-in
+-- user could attribute a record to a colleague.
+create or replace function public.force_owner_id()
+returns trigger
+language plpgsql
+as $$
+begin
+  if tg_op = 'INSERT' then
+    new.owner_id = auth.uid();
+  else
+    new.owner_id = old.owner_id;
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists assets_force_owner_id on public.assets;
+create trigger assets_force_owner_id
+  before insert or update on public.assets
+  for each row
+  execute function public.force_owner_id();
+
 -- Row Level Security: the only thing protecting this data.
+--
+-- These policies give every signed-in user full read and write access to the
+-- whole inventory, which is the intent: it is one shared team record, not a
+-- set of private ones. That makes "who can hold an account" the real access
+-- boundary. Supabase allows public email sign-up by default, so you MUST turn
+-- it off, or any stranger can create an account and gain full access:
+--   Authentication > Sign In / Providers > Email > "Allow new users to sign up" = off
+-- Create accounts from Authentication > Users instead. See README.md.
 alter table public.assets enable row level security;
 
 drop policy if exists assets_select on public.assets;

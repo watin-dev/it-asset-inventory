@@ -1,0 +1,125 @@
+:root {
+  --bg: #f6f7f9;
+  --card: #ffffff;
+  --line: #d8dce3;
+  --text: #1d2228;
+  --muted: #5d6673;
+  --accent: #2563eb;
+  --danger: #b42318;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+  background: var(--bg);
+  color: var(--text);
+}
+
+.banner {
+  padding: 10px 16px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.banner.error { background: #fde7e5; color: var(--danger); }
+.banner.info  { background: #e6f0fe; color: var(--accent); }
+
+.login-view {
+  display: flex;
+  justify-content: center;
+  padding: 80px 16px;
+}
+.card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 28px;
+  width: 340px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.card h1 { margin: 0 0 12px; font-size: 20px; }
+
+label { font-size: 13px; color: var(--muted); margin-top: 8px; }
+
+input, select, textarea {
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font: inherit;
+  background: #fff;
+}
+
+button {
+  padding: 8px 14px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #fff;
+  font: inherit;
+  cursor: pointer;
+}
+button[type="submit"], #add-button {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+button:hover { filter: brightness(0.97); }
+
+.topbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 20px;
+  background: var(--card);
+  border-bottom: 1px solid var(--line);
+}
+.topbar h1 { margin: 0; font-size: 18px; }
+.topbar-right { display: flex; align-items: center; gap: 12px; }
+#user-email { color: var(--muted); font-size: 13px; }
+
+.toolbar {
+  display: flex;
+  gap: 10px;
+  padding: 14px 20px;
+  flex-wrap: wrap;
+}
+#search-input { flex: 1 1 260px; }
+
+table.assets {
+  width: calc(100% - 40px);
+  margin: 0 20px 40px;
+  border-collapse: collapse;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.assets th, .assets td {
+  text-align: left;
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--line);
+  vertical-align: top;
+}
+.assets th { background: #eef1f5; font-size: 13px; color: var(--muted); }
+.assets tr:last-child td { border-bottom: none; }
+.assets .empty { text-align: center; color: var(--muted); padding: 28px; }
+.row-actions { display: flex; gap: 6px; white-space: nowrap; }
+
+dialog {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 24px;
+  width: 420px;
+  max-width: 92vw;
+}
+dialog form { display: flex; flex-direction: column; }
+dialog h2 { margin: 0 0 8px; font-size: 18px; }
+dialog menu {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin: 20px 0 0;
+  padding: 0;
+}

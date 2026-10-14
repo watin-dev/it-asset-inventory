@@ -7,18 +7,23 @@ Supabase Postgres; the site is served from GitHub Pages. No build step.
 
 1. Create a project at https://supabase.com.
 2. Open the SQL editor and run the contents of `schema.sql`.
-3. Go to **Authentication > Users** and add an account for each person who
-   should have access. There is no public sign-up form by design.
-4. Go to **Project Settings > API** and copy the Project URL and the
+3. **Turn off public sign-up.** Go to **Authentication > Sign In / Providers
+   > Email** and set **Allow new users to sign up** to off. Every signed-in
+   user has full read and write access to the whole inventory, so an open
+   sign-up endpoint means any stranger can create an account and get it.
+   This is the single most important setup step.
+4. Go to **Authentication > Users** and add an account for each person who
+   should have access. The app has no sign-up form by design.
+5. Go to **Project Settings > API** and copy the Project URL and the
    `anon` `public` key.
-5. Put both into `config.js`:
+6. Put both into `config.js`:
 
    ```js
    export const SUPABASE_URL = "https://YOURPROJECT.supabase.co";
    export const SUPABASE_ANON_KEY = "eyJ...";
    ```
 
-6. Serve the folder and open it in a browser:
+7. Serve the folder and open it in a browser:
 
    ```bash
    python -m http.server 8080

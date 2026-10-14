@@ -45,6 +45,18 @@ under **Authentication > URL Configuration**, as both the Site URL and a
 Redirect URL. Without this, sign-in behaves inconsistently on the
 deployed origin.
 
+## Automated checks
+
+```bash
+node test/smoke.mjs
+```
+
+`test/smoke.mjs` loads the real `app.js` with a stubbed DOM and a stubbed
+Supabase client, then exercises the rendering, escaping, error, write and
+filter paths. It needs no Supabase project, no npm install, and runs in
+the deploy workflow before publishing. It does not cover anything that
+requires a live backend — that is what the checklist below is for.
+
 ## Manual test checklist
 
 Run all of these before trusting the app with real records.
